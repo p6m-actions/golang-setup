@@ -1,0 +1,126 @@
+name: "Go Setup"
+description: "Setup the Go toolchain with module and build caching, plus the protobuf toolchain gRPC services need"
+author: "Ybor / P6M <engineering@ybor.ai>"
+
+# Define the inputs for this action
+inputs:
+  go-version:
+    description: "Go version to install (e.g. '1.23'). Leave empty to take it from go-version-file."
+    required: false
+    default: ""
+  go-version-file:
+    description: "File to read the Go version from. go.mod is the single source of truth for a Go module, so a repo never states its toolchain version twice."
+    required: false
+    default: "go.mod"
+  cache:
+    description: "Enable module and build caching (setup-go's own cache, keyed on the checksum file)"
+    required: false
+    default: "true"
+  cache-dependency-path:
+    description: "Dependency file the cache key is computed from. go.sum is generated rather than rendered, so a fresh clone may not have one yet — go.mod is the stable fallback."
+    required: false
+    default: |
+      go.sum
+      go.mod
+  install-protoc:
+    description: "Install protoc and the Go gRPC plugins: 'auto' (when a proto/ directory exists), 'true', or 'false'."
+    required: false
+    default: "auto"
+  protoc-gen-go-version:
+    description: "Version of protoc-gen-go to install. Keep in step with the production Dockerfile — generated bindings that disagree with the runtime library are a link error, not a warning."
+    required: false
+    default: "v1.36.5"
+  protoc-gen-go-grpc-version:
+    description: "Version of protoc-gen-go-grpc to install"
+    required: false
+    default: "v1.5.1"
+  install-dependencies:
+    description: "Run `go mod download` to pre-warm the module cache"
+    required: false
+    default: "false"
+  working-directory:
+    description: "Working directory for go commands"
+    required: false
+    default: "."
+
+# Define the outputs for this action
+outputs:
+  go-version:
+    description: "The installed Go version"
+    value: ${{ steps.go-version.outputs.version }}
+  cache-hit:
+    description: "Whether the Go module/build cache was hit"
+    value: ${{ steps.setup-go.outputs.cache-hit }}
+  protoc-installed:
+    description: "'true' when the protobuf toolchain was installed"
+    value: ${{ steps.protoc-needed.outputs.needed }}
+
+# Define the runs configuration
+runs:
+  using: "composite"
+  steps:
+    - name: Install Go toolchain
+      id: setup-go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ inputs.go-version }}
+        go-version-file: ${{ inputs.go-version == '' && format('{0}/{1}', inputs.working-directory, inputs.go-version-file) || '' }}
+        cache: ${{ inputs.cache == 'true' }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+
+    - name: Get Go version
+      id: go-version
+      shell: bash
+      run: |
+        VERSION=$(go version | cut -d' ' -f3 | sed 's/^go//')
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Go version: $VERSION"
+
+    - name: Resolve whether the protobuf toolchain is needed
+      id: protoc-needed
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        case "${{ inputs.install-protoc }}" in
+          true)  NEEDED=true ;;
+          false) NEEDED=false ;;
+          auto)
+            # A gRPC service carries proto/ and imports bindings generated from it. Anything else
+            # has no use for protoc, and installing it would just slow every build down.
+            if [ -d proto ]; then NEEDED=true; else NEEDED=false; fi
+            ;;
+          *)
+            echo "::error title=Invalid install-protoc::Expected 'auto', 'true' or 'false', got '${{ inputs.install-protoc }}'."
+            exit 1
+            ;;
+        esac
+        echo "needed=$NEEDED" >> $GITHUB_OUTPUT
+        echo "protobuf toolchain needed: $NEEDED"
+
+    - name: Install protobuf toolchain
+      if: steps.protoc-needed.outputs.needed == 'true'
+      shell: bash
+      run: |
+        echo "::group::Installing protobuf toolchain"
+        # protoc itself is a standalone binary the runner does not ship; the two plugins are Go
+        # tools, installed into GOPATH/bin, which setup-go has already put on PATH.
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+        go install google.golang.org/protobuf/cmd/protoc-gen-go@${{ inputs.protoc-gen-go-version }}
+        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ inputs.protoc-gen-go-grpc-version }}
+        protoc --version
+        echo "::endgroup::"
+
+    - name: Download dependencies
+      if: inputs.install-dependencies == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "::group::Downloading Dependencies"
+        go mod download
+        echo "::endgroup::"
+
+# Define the branding for the action in the GitHub Marketplace
+branding:
+  icon: "package"
+  color: "blue"
