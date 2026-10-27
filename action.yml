@@ -61,7 +61,7 @@ runs:
   steps:
     - name: Install Go toolchain
       id: setup-go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version: ${{ inputs.go-version }}
         go-version-file: ${{ inputs.go-version == '' && format('{0}/{1}', inputs.working-directory, inputs.go-version-file) || '' }}
